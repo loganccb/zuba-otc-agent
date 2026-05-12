@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+twilio
+anthropic
+python-dotenv
+requests
