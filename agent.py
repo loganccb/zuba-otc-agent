@@ -8,6 +8,7 @@ from config import ANTHROPIC_API_KEY
 from models import Trade, Customer, TradeState, CustomerType
 from rates import is_rate_expired, seconds_remaining
 import lp_comms
+import slack
 from pricing import calculate_markup, apply_markup_to_rate, min_acceptable_rate, detect_sensitivity
 from compliance import check_compliance, format_flags_for_message
 
@@ -190,10 +191,19 @@ def _extract_counter_rate(message: str, current_rate: float) -> Optional[float]:
 # --- Rate fetch (split into initiate + apply for async LP flow) ---
 
 def _initiate_lp_request(trade: Trade, phone_number: str) -> None:
-    """Send rate request to LP and move trade to AWAITING_LP_RATE."""
-    lp_comms.request_rate(trade.currency_pair, trade.volume_usd, trade.trade_id)
-    _pending_lp[trade.trade_id] = phone_number
-    trade.state = TradeState.AWAITING_LP_RATE
+    """
+    Fetch LP rate (mock) and apply it immediately.
+    In live phase: replace with async SMS/WhatsApp to real LP number.
+    """
+    lp_name = lp_comms.MOCK_RATES.get(trade.currency_pair, {}).get("lp", "LP")
+    rate_data = lp_comms.get_mock_rate(trade.currency_pair, trade.trade_id)
+    slack.post_lp_request(trade.trade_id, trade.currency_pair, trade.volume_usd, lp_name)
+    if rate_data:
+        _apply_lp_rate(trade, sessions[phone_number]["customer"], rate_data)
+        slack.post_lp_response(trade.trade_id, trade.currency_pair, trade.lp_name, trade.lp_rate, trade.customer_rate)
+    else:
+        _pending_lp[trade.trade_id] = phone_number
+        trade.state = TradeState.AWAITING_LP_RATE
 
 
 def _apply_lp_rate(trade: Trade, customer: Customer, rate_data: dict) -> None:
@@ -401,7 +411,12 @@ def handle_message(phone_number: str, message: str) -> str:
         if trade.currency_pair and trade.volume_usd:
             trade.sensitivity_score = detect_sensitivity(message, customer.customer_type)
             _initiate_lp_request(trade, phone_number)
-            return ""  # No immediate reply - client hears nothing until LP responds
+            if trade.state == TradeState.RATE_QUOTED:
+                # Rate applied synchronously - return quote immediately
+                reply = _format_quote_message(trade)
+                session["history"].append({"role": "assistant", "content": reply})
+                return reply
+            return ""  # Async LP path only - client waits for LP reply via /webhook
         # else: fall through to Claude to ask for missing info
 
     # Step 1b: AWAITING_LP_RATE - LP pinged, waiting for response
@@ -461,6 +476,7 @@ def handle_message(phone_number: str, message: str) -> str:
         trade.state = TradeState.SUMMARY_POSTED
         reply = _format_final_summary(trade)
         session["history"].append({"role": "assistant", "content": reply})
+        slack.post_trade_summary(trade)
         return reply
 
     # Counter-rate in RATE_QUOTED/NEGOTIATING: ping LP before handing to Claude
