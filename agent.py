@@ -163,6 +163,16 @@ def _is_acknowledgement(message: str) -> bool:
     return any(w in msg for w in ["OK", "OKAY", "NOTED", "GOT IT", "RECEIVED", "THANKS", "THANK YOU", "UNDERSTOOD", "YES"])
 
 
+def _is_new_enquiry(message: str) -> bool:
+    """Detect when the client wants to start a separate/fresh trade."""
+    msg = message.upper().strip()
+    return any(phrase in msg for phrase in [
+        "NEW ENQUIRY", "SEPARATE ENQUIRY", "NEW TRADE", "DIFFERENT TRADE",
+        "START OVER", "FRESH ENQUIRY", "DIFFERENT CURRENCY", "NEW QUOTE",
+        "SEPARATE QUOTE", "ANOTHER ENQUIRY",
+    ])
+
+
 # --- Counter-rate extraction ---
 
 def _extract_counter_rate(message: str, current_rate: float) -> Optional[float]:
@@ -213,10 +223,12 @@ def _initiate_lp_request(trade: Trade, phone_number: str) -> None:
     if rate_data:
         _apply_lp_rate(trade, sessions[phone_number]["customer"], rate_data)
         slack.post_lp_response(trade.trade_id, trade.currency_pair, trade.lp_name, trade.lp_rate, trade.customer_rate)
+        print(f"[COMPLIANCE CHECK] id={trade.trade_id} volume={trade.volume_usd} flags={trade.compliance_flags} state={trade.state.value}")
         if trade.compliance_flags:
             trade.state = TradeState.COMPLIANCE_REVIEW
             _pending_compliance[trade.trade_id] = phone_number
             slack.post_compliance_review(trade, phone_number, BASE_URL)
+            print(f"[COMPLIANCE] Trade {trade.trade_id} held for review - flags: {trade.compliance_flags}")
         # else: state remains RATE_QUOTED from _apply_lp_rate
     else:
         _pending_lp[trade.trade_id] = phone_number
@@ -458,16 +470,20 @@ def handle_message(phone_number: str, message: str) -> str:
         # No useful info: ignore, send no reply
         return ""
 
-    # Step 2: Check rate expiry
+    # Step 2: Check rate expiry - full trade reset so client provides fresh details
     if trade.quote_time and is_rate_expired(trade.quote_time):
         if trade.state in (TradeState.RATE_QUOTED, TradeState.NEGOTIATING):
-            trade.state      = TradeState.ENQUIRY
-            trade.lp_rate    = None
-            trade.customer_rate = None
-            trade.quote_time = None
-            reply = "Your rate has expired. Please send your enquiry again and I'll fetch a fresh quote."
+            session["trade"] = None  # Full reset - fresh Trade created on next message
+            reply = "Your rate has expired. Please send a fresh enquiry with the pair and amount."
             session["history"].append({"role": "assistant", "content": reply})
             return reply
+
+    # Step 2b: Detect new enquiry intent in RATE_QUOTED/NEGOTIATING
+    if trade.state in (TradeState.RATE_QUOTED, TradeState.NEGOTIATING) and _is_new_enquiry(message):
+        session["trade"] = None
+        reply = "Got it - starting a fresh enquiry. Please send the pair and amount."
+        session["history"].append({"role": "assistant", "content": reply})
+        return reply
 
     # Step 3: Route to Python-formatted messages or Claude
 
