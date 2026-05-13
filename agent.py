@@ -333,6 +333,25 @@ def _format_trade_summary(trade: Trade) -> str:
     )
 
 
+def _format_negotiation_message(trade: Trade) -> str:
+    pair = trade.currency_pair
+    hard, local = pair.split("/")
+    expiry_str = (trade.quote_time + timedelta(seconds=600)).strftime("%H:%M UTC")
+
+    if trade.lp_negotiation_accepted and trade.lp_client_counter is not None:
+        rate = trade.lp_client_counter
+        note = f"I can do {rate:,.2f} {local} per {hard}."
+    else:
+        rate = trade.lp_min_customer_rate
+        note = f"Best I can do is {rate:,.2f} {local} per {hard}."
+
+    return (
+        f"{note}\n"
+        f"Expires at: {expiry_str}\n\n"
+        f"Reply CONFIRM to lock this in."
+    )
+
+
 def _format_beneficiary_request(trade: Trade) -> str:
     return (
         f"Please provide your beneficiary details:\n\n"
@@ -503,32 +522,30 @@ def handle_message(phone_number: str, message: str) -> str:
 
     # Step 3: Route to Python-formatted messages or Claude
 
-    # CONFIRM received - send trade summary
+    # CONFIRM received - lock trade, request beneficiary details
     if _is_confirmation(message) and trade.state in (TradeState.RATE_QUOTED, TradeState.NEGOTIATING):
-        trade.state             = TradeState.LOCKED_IN
-        trade.locked_at         = datetime.utcnow()
-        trade.trade_summary_sent = True
-        reply = _format_trade_summary(trade)
-        session["history"].append({"role": "assistant", "content": reply})
-        return reply
-
-    # Any message after trade summary - send beneficiary request and await details
-    if trade.state == TradeState.LOCKED_IN:
-        trade.state = TradeState.AWAITING_BENEFICIARY
+        # Fix negotiated rate: update customer_rate to the agreed negotiated rate
+        if trade.state == TradeState.NEGOTIATING:
+            if trade.lp_negotiation_accepted and trade.lp_client_counter is not None:
+                trade.customer_rate = trade.lp_client_counter
+            elif trade.lp_min_customer_rate is not None:
+                trade.customer_rate = trade.lp_min_customer_rate
+        trade.state   = TradeState.AWAITING_BENEFICIARY
+        trade.locked_at = datetime.utcnow()
         reply = _format_beneficiary_request(trade)
         session["history"].append({"role": "assistant", "content": reply})
         return reply
 
-    # Beneficiary details received - send final summary
+    # Beneficiary details received - post to Slack, send simple confirmation to client
     if trade.state == TradeState.AWAITING_BENEFICIARY:
         trade.beneficiary_details = message
         trade.state = TradeState.SUMMARY_POSTED
-        reply = _format_final_summary(trade, customer)
+        slack.post_trade_summary(trade, customer)
+        reply = "Trade booked. We'll process your payment shortly."
         session["history"].append({"role": "assistant", "content": reply})
-        slack.post_trade_summary(trade)
         return reply
 
-    # Counter-rate in RATE_QUOTED/NEGOTIATING: ping LP before handing to Claude
+    # Counter-rate in RATE_QUOTED/NEGOTIATING: ping LP, return formatted reply with expiry
     if trade.state in (TradeState.RATE_QUOTED, TradeState.NEGOTIATING):
         if not _is_confirmation(message) and not _is_acknowledgement(message):
             counter = _extract_counter_rate(message, trade.customer_rate)
@@ -540,10 +557,15 @@ def handle_message(phone_number: str, message: str) -> str:
                     client_counter=counter,
                     original_lp_rate=trade.lp_rate,
                 )
+                trade.lp_client_counter      = counter
                 trade.lp_counter_rate        = neg["lp_best_rate"]
                 trade.lp_min_customer_rate   = neg["min_customer_rate"]
                 trade.lp_negotiation_accepted = neg["accepted"]
+                trade.quote_time             = datetime.utcnow()
                 trade.state = TradeState.NEGOTIATING
+                reply = _format_negotiation_message(trade)
+                session["history"].append({"role": "assistant", "content": reply})
+                return reply
 
     # All other states: Claude handles conversationally
     reply = _claude_reply(session, customer, trade)

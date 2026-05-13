@@ -50,6 +50,7 @@ class Trade:
     # Price sensitivity signal detected from opening message (0.0 = none, 1.0 = strong)
     sensitivity_score:     float = 0.0
     # LP negotiation state (populated when client counters)
+    lp_client_counter:     Optional[float] = None  # Rate the client countered with
     lp_counter_rate:       Optional[float] = None  # LP's best achievable rate after negotiation
     lp_min_customer_rate:  Optional[float] = None  # Lowest rate we can offer on LP's best rate
     lp_negotiation_accepted: Optional[bool] = None # Whether LP can support client's counter

@@ -67,16 +67,26 @@ def post_compliance_review(trade, client_phone: str, base_url: str) -> None:
     )
 
 
-def post_trade_summary(trade) -> None:
+def post_trade_summary(trade, customer) -> None:
     pair        = trade.currency_pair
     hard, local = pair.split("/")
     local_amount = (trade.customer_rate * trade.volume_usd) if trade.customer_rate and trade.volume_usd else 0
 
+    beneficiary_block = ""
+    if trade.beneficiary_details:
+        lines = [l for l in trade.beneficiary_details.splitlines() if not l.strip().upper().startswith("AMOUNT")]
+        beneficiary_block = "\n".join(lines).strip()
+
     flags_line = f"\n:warning: Compliance flags: {', '.join(trade.compliance_flags)}" if trade.compliance_flags else ""
     _post(
-        f":white_check_mark: *Trade Complete* [{trade.trade_id}]\n"
-        f"Pair: {pair} | {hard} {trade.volume_usd:,.2f} -> {local} {local_amount:,.2f}\n"
-        f"Rate: {trade.customer_rate:,.2f} | LP: {trade.lp_name} | LP rate: {trade.lp_rate:,.4f} | Markup: {trade.markup_bps:.0f}bps\n"
-        f"Beneficiary: {trade.beneficiary_details or 'not provided'}"
+        f":white_check_mark: *{trade.trade_id}*\n"
+        f"Output Currency: {hard}\n"
+        f"Output Amount: {trade.volume_usd:,.2f}\n"
+        f"Input Currency: {local}\n"
+        f"Input Amount: {local_amount:,.2f}\n"
+        f"Locked Rate: {trade.customer_rate:,.2f}\n"
+        f"Source Rate: {trade.lp_rate:,.4f}\n"
+        f"Name of customer: {customer.name}\n"
+        f"{beneficiary_block}"
         f"{flags_line}"
     )
