@@ -2,7 +2,7 @@
 lp_comms.py - LP communication layer
 
 Mock phase (current):
-  - request_rate() sends a real WhatsApp message from Twilio #1 to Twilio #2
+  - request_rate() sends a WhatsApp message from Twilio #1 to LP's WhatsApp number
   - Twilio #2's /lp-webhook auto-replies; generate_lp_reply() powers that response
   - parse_lp_response() processes LP replies arriving back at /webhook on Twilio #1
   - request_negotiation() remains synchronous mock (no LP WhatsApp thread needed yet)
@@ -87,8 +87,8 @@ def _send_to_lp(lp_name: str, lp_phone: str, message: str) -> None:
     if client and TWILIO_OTC_NUMBER and lp_phone:
         try:
             client.messages.create(
-                from_=TWILIO_OTC_NUMBER,  # plain SMS - no whatsapp: prefix
-                to=lp_phone,
+                from_=f"whatsapp:{TWILIO_OTC_NUMBER}",
+                to=f"whatsapp:{lp_phone}",
                 body=message,
             )
         except Exception as e:
@@ -125,6 +125,27 @@ def request_rate(pair: str, volume: float, trade_id: str) -> None:
         f"Rate request [{trade_id}]: {pair}, volume {hard} {volume:,.0f}. "
         f"Reply: [{trade_id}] <rate>"
     )
+
+
+# ---------------------------------------------------------------------------
+# Mock rate fetch (in-process, no Twilio needed)
+# Used in mock phase instead of the async SMS round-trip.
+# In live phase: remove this and use request_rate() + async LP reply.
+# ---------------------------------------------------------------------------
+
+def get_mock_rate(pair: str, trade_id: str) -> Optional[dict]:
+    """Return a mock LP rate directly, bypassing Twilio SMS entirely."""
+    pair = pair.upper()
+    if pair not in MOCK_RATES:
+        logger.warning(f"get_mock_rate: unsupported pair {pair}")
+        return None
+    data = MOCK_RATES[pair]
+    rate = data["rate"]
+    lp_name = data["lp"]
+    log_line = f"[LP MOCK <- {lp_name}]: [{trade_id}] {pair}: {rate:.4f}"
+    print(log_line)
+    logger.info(log_line)
+    return {"trade_id": trade_id, "lp_rate": rate, "lp_name": lp_name}
 
 
 # ---------------------------------------------------------------------------

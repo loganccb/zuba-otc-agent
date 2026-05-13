@@ -8,11 +8,6 @@ import lp_comms
 
 app = FastAPI()
 
-# Startup diagnostic - remove after confirming env vars load correctly
-print(f"[STARTUP] TWILIO_OTC_NUMBER={TWILIO_OTC_NUMBER!r}")
-print(f"[STARTUP] TWILIO_LP_NUMBER={TWILIO_LP_NUMBER!r}")
-print(f"[STARTUP] TWILIO_ACCOUNT_SID={'set' if TWILIO_ACCOUNT_SID else 'MISSING'}")
-
 twilio_client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
 
