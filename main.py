@@ -50,7 +50,7 @@ def _voice_gather(say_text: str) -> PlainTextResponse:
     gather = Gather(
         input="speech",
         action="/voice-response",
-        language="en-NG",
+        language="en-US",
         speech_timeout="auto",
         timeout=5,
     )
