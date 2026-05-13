@@ -37,6 +37,7 @@ def _empty_twiml() -> PlainTextResponse:
 
 
 def _clean_for_voice(text: str) -> str:
+    """Strip WhatsApp markdown so <Say> doesn't read symbols aloud."""
     text = re.sub(r"[*_~`]", "", text)   # bold, italic, strikethrough, code
     text = re.sub(r"\n+", ". ", text)    # newlines -> natural pauses
     text = re.sub(r"\s{2,}", " ", text)  # collapse extra whitespace
