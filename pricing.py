@@ -130,8 +130,8 @@ def min_acceptable_rate(lp_rate: float, markup_bps: float) -> float:
     The lowest rate we can accept during negotiation without going below floor.
     Used to tell Claude the negotiation boundary.
     """
-    # Minimum markup = lower of 20bps floor or 50% of original markup
-    min_markup = min(markup_bps * (1 - MAX_NEGOTIATION_CONCESSION), FLOOR_BPS)
+    # Minimum markup = higher of 20bps floor or 50% of original markup
+    min_markup = max(markup_bps * (1 - MAX_NEGOTIATION_CONCESSION), FLOOR_BPS)
     return apply_markup_to_rate(lp_rate, min_markup)  # still higher than LP rate
 
 

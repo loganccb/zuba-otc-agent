@@ -4,7 +4,7 @@ from typing import Optional
 
 import anthropic
 
-from config import ANTHROPIC_API_KEY
+from config import ANTHROPIC_API_KEY, BASE_URL
 from models import Trade, Customer, TradeState, CustomerType
 from rates import is_rate_expired, seconds_remaining
 import lp_comms
@@ -17,7 +17,8 @@ from compliance import check_compliance, format_flags_for_message
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 sessions: dict[str, dict] = {}
-_pending_lp: dict[str, str] = {}  # trade_id -> client phone, for async LP responses
+_pending_lp: dict[str, str] = {}           # trade_id -> client phone, async LP flow
+_pending_compliance: dict[str, str] = {}   # trade_id -> client phone, compliance hold
 _trade_counter = 103
 
 
@@ -28,7 +29,17 @@ def _next_trade_id() -> str:
 
 
 # --- Known customers ---
-KNOWN_CUSTOMERS: dict[str, Customer] = {}
+# TODO: replace with database lookup once WhatsApp number -> business name mapping is built
+# TODO: set customer_type correctly per customer once confirmed with Tolu
+KNOWN_CUSTOMERS: dict[str, Customer] = {
+    "+447455819005": Customer(
+        phone_number="+447455819005",
+        name="LCB Enterprises, Ltd",
+        customer_type=CustomerType.FI,
+        kyc_verified=True,
+        is_new=False,
+    ),
+}
 
 HARD_CURRENCIES = ["USDT", "USDC", "USD", "GBP", "EUR", "CAD", "ZAR"]
 
@@ -193,7 +204,8 @@ def _extract_counter_rate(message: str, current_rate: float) -> Optional[float]:
 def _initiate_lp_request(trade: Trade, phone_number: str) -> None:
     """
     Fetch LP rate (mock) and apply it immediately.
-    In live phase: replace with async SMS/WhatsApp to real LP number.
+    If compliance flags are raised, holds trade in COMPLIANCE_REVIEW and notifies via Slack.
+    In live phase: replace get_mock_rate with async LP send and restore AWAITING_LP_RATE path.
     """
     lp_name = lp_comms.MOCK_RATES.get(trade.currency_pair, {}).get("lp", "LP")
     rate_data = lp_comms.get_mock_rate(trade.currency_pair, trade.trade_id)
@@ -201,6 +213,11 @@ def _initiate_lp_request(trade: Trade, phone_number: str) -> None:
     if rate_data:
         _apply_lp_rate(trade, sessions[phone_number]["customer"], rate_data)
         slack.post_lp_response(trade.trade_id, trade.currency_pair, trade.lp_name, trade.lp_rate, trade.customer_rate)
+        if trade.compliance_flags:
+            trade.state = TradeState.COMPLIANCE_REVIEW
+            _pending_compliance[trade.trade_id] = phone_number
+            slack.post_compliance_review(trade, phone_number, BASE_URL)
+        # else: state remains RATE_QUOTED from _apply_lp_rate
     else:
         _pending_lp[trade.trade_id] = phone_number
         trade.state = TradeState.AWAITING_LP_RATE
@@ -299,7 +316,7 @@ def _format_beneficiary_request(trade: Trade) -> str:
     )
 
 
-def _format_final_summary(trade: Trade) -> str:
+def _format_final_summary(trade: Trade, customer: Customer) -> str:
     pair        = trade.currency_pair
     hard, local = pair.split("/")
     hard_amount  = f"{trade.volume_usd:,.2f}"
@@ -322,7 +339,7 @@ def _format_final_summary(trade: Trade) -> str:
         f"Input Currency: {local}\n"
         f"Input Amount: {local_amount}\n"
         f"Exchange Rate: {trade.customer_rate:,.2f}\n"
-        f"Name of customer: IFXBridge\n\n"
+        f"Name of customer: {customer.name}\n\n"
         f"{beneficiary_block}"
     )
 
@@ -412,14 +429,21 @@ def handle_message(phone_number: str, message: str) -> str:
             trade.sensitivity_score = detect_sensitivity(message, customer.customer_type)
             _initiate_lp_request(trade, phone_number)
             if trade.state == TradeState.RATE_QUOTED:
-                # Rate applied synchronously - return quote immediately
                 reply = _format_quote_message(trade)
                 session["history"].append({"role": "assistant", "content": reply})
                 return reply
-            return ""  # Async LP path only - client waits for LP reply via /webhook
+            if trade.state == TradeState.COMPLIANCE_REVIEW:
+                reply = "We're reviewing your enquiry and will be in touch shortly."
+                session["history"].append({"role": "assistant", "content": reply})
+                return reply
+            return ""  # Async LP path only
         # else: fall through to Claude to ask for missing info
 
-    # Step 1b: AWAITING_LP_RATE - LP pinged, waiting for response
+    # Step 1b: COMPLIANCE_REVIEW - trade held, ignore all messages until resolved
+    if trade.state == TradeState.COMPLIANCE_REVIEW:
+        return ""
+
+    # Step 1c: AWAITING_LP_RATE - LP pinged, waiting for response
     if trade.state == TradeState.AWAITING_LP_RATE:
         extracted = _extract_pair_and_volume(message)
         if extracted["volume"] or extracted["pair"]:
@@ -447,13 +471,6 @@ def handle_message(phone_number: str, message: str) -> str:
 
     # Step 3: Route to Python-formatted messages or Claude
 
-    # Quote message - return as soon as rate is available and not yet shown
-    if trade.state == TradeState.RATE_QUOTED and not trade.quote_shown:
-        trade.quote_shown = True
-        reply = _format_quote_message(trade)
-        session["history"].append({"role": "assistant", "content": reply})
-        return reply
-
     # CONFIRM received - send trade summary
     if _is_confirmation(message) and trade.state in (TradeState.RATE_QUOTED, TradeState.NEGOTIATING):
         trade.state             = TradeState.LOCKED_IN
@@ -474,7 +491,7 @@ def handle_message(phone_number: str, message: str) -> str:
     if trade.state == TradeState.AWAITING_BENEFICIARY:
         trade.beneficiary_details = message
         trade.state = TradeState.SUMMARY_POSTED
-        reply = _format_final_summary(trade)
+        reply = _format_final_summary(trade, customer)
         session["history"].append({"role": "assistant", "content": reply})
         slack.post_trade_summary(trade)
         return reply
@@ -500,3 +517,37 @@ def handle_message(phone_number: str, message: str) -> str:
     reply = _claude_reply(session, customer, trade)
     session["history"].append({"role": "assistant", "content": reply})
     return reply
+
+
+# --- Compliance review: approve / reject ---
+
+def approve_trade(trade_id: str) -> Optional[tuple[str, str]]:
+    """
+    Release a compliance-held trade. Called from /trade/approve endpoint.
+    Returns (client_phone, quote_message) to send to client, or None if not found.
+    """
+    client_phone = _pending_compliance.pop(trade_id, None)
+    if not client_phone:
+        return None
+    session = sessions.get(client_phone)
+    if not session or not session["trade"] or session["trade"].trade_id != trade_id:
+        return None
+    trade = session["trade"]
+    trade.state = TradeState.RATE_QUOTED
+    quote = _format_quote_message(trade)
+    session["history"].append({"role": "assistant", "content": quote})
+    return (client_phone, quote)
+
+
+def reject_trade(trade_id: str) -> Optional[str]:
+    """
+    Reject a compliance-held trade. Called from /trade/reject endpoint.
+    Returns client_phone to send rejection message to, or None if not found.
+    """
+    client_phone = _pending_compliance.pop(trade_id, None)
+    if not client_phone:
+        return None
+    session = sessions.get(client_phone)
+    if session and session["trade"] and session["trade"].trade_id == trade_id:
+        session["trade"].state = TradeState.SUMMARY_POSTED  # close session
+    return client_phone

@@ -5,13 +5,14 @@ from enum import Enum
 
 
 class TradeState(Enum):
-    ENQUIRY       = "ENQUIRY"
-    RATE_QUOTED   = "RATE_QUOTED"
-    NEGOTIATING   = "NEGOTIATING"
-    AWAITING_LP_RATE     = "AWAITING_LP_RATE"
-    LOCKED_IN            = "LOCKED_IN"
+    ENQUIRY            = "ENQUIRY"
+    AWAITING_LP_RATE   = "AWAITING_LP_RATE"
+    COMPLIANCE_REVIEW  = "COMPLIANCE_REVIEW"   # Blocked pending human approval
+    RATE_QUOTED        = "RATE_QUOTED"
+    NEGOTIATING        = "NEGOTIATING"
+    LOCKED_IN          = "LOCKED_IN"
     AWAITING_BENEFICIARY = "AWAITING_BENEFICIARY"
-    SUMMARY_POSTED       = "SUMMARY_POSTED"
+    SUMMARY_POSTED     = "SUMMARY_POSTED"
 
 
 class CustomerType(Enum):

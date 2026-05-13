@@ -16,4 +16,5 @@ TWILIO_LP_NUMBER   = os.getenv("TWILIO_LP_NUMBER")    # Twilio #2 - LP simulator
 SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL")
 
 # Server
-PORT = int(os.getenv("PORT", 8000))  # Railway sets PORT automatically
+PORT     = int(os.getenv("PORT", 8000))  # Railway sets PORT automatically
+BASE_URL = os.getenv("BASE_URL", "https://zuba-otc-agent-production.up.railway.app")

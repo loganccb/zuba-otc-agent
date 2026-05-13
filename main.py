@@ -3,8 +3,9 @@ from fastapi.responses import PlainTextResponse
 from twilio.rest import Client as TwilioClient
 
 from config import PORT, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_OTC_NUMBER, TWILIO_LP_NUMBER
-from agent import handle_message, handle_lp_response
+from agent import handle_message, handle_lp_response, approve_trade, reject_trade
 import lp_comms
+import slack
 
 app = FastAPI()
 
@@ -65,6 +66,48 @@ async def webhook(
     # Client message
     reply = handle_message(phone_number=from_number, message=Body)
     return _twiml(reply) if reply else _empty_twiml()
+
+
+# ---------------------------------------------------------------------------
+# Compliance review: approve / reject endpoints
+# Tolu or Ali hits these URLs from the Slack notification to release or reject a trade.
+# TODO: add secret token parameter before going to production.
+# TODO: switch Slack notifications from DM to #trading channel when ready.
+# ---------------------------------------------------------------------------
+
+REJECTION_MESSAGE = (
+    "We're unable to proceed with this trade at the moment. "
+    "A member of our team will be in touch with you directly."
+)
+
+
+@app.get("/trade/approve")
+async def trade_approve(id: str):
+    result = approve_trade(id)
+    if not result:
+        return PlainTextResponse("Trade not found or already processed.", status_code=404)
+    client_phone, quote = result
+    twilio_client.messages.create(
+        from_=f"whatsapp:{TWILIO_OTC_NUMBER}",
+        to=f"whatsapp:{client_phone}",
+        body=quote,
+    )
+    slack._post(f":white_check_mark: [{id}] Approved - quote sent to client.")
+    return PlainTextResponse(f"Approved. Quote sent to {client_phone}.")
+
+
+@app.get("/trade/reject")
+async def trade_reject(id: str):
+    client_phone = reject_trade(id)
+    if not client_phone:
+        return PlainTextResponse("Trade not found or already processed.", status_code=404)
+    twilio_client.messages.create(
+        from_=f"whatsapp:{TWILIO_OTC_NUMBER}",
+        to=f"whatsapp:{client_phone}",
+        body=REJECTION_MESSAGE,
+    )
+    slack._post(f":x: [{id}] Rejected - client notified to expect follow-up.")
+    return PlainTextResponse(f"Rejected. Client at {client_phone} notified.")
 
 
 # ---------------------------------------------------------------------------
