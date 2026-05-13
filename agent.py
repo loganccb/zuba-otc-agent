@@ -39,6 +39,13 @@ KNOWN_CUSTOMERS: dict[str, Customer] = {
         kyc_verified=True,
         is_new=False,
     ),
+    "+19178210600": Customer(
+        phone_number="+19178210600",
+        name="LCB Enterprises, Ltd",
+        customer_type=CustomerType.FI,
+        kyc_verified=True,
+        is_new=False,
+    ),
 }
 
 HARD_CURRENCIES = ["USDT", "USDC", "USD", "GBP", "EUR", "CAD", "ZAR", "CNY"]
