@@ -522,7 +522,7 @@ def handle_message(phone_number: str, message: str) -> str:
 
     # Step 3: Route to Python-formatted messages or Claude
 
-    # CONFIRM received - lock trade, request beneficiary details
+    # CONFIRM received - fix negotiated rate, send pre-funding trade summary to client
     if _is_confirmation(message) and trade.state in (TradeState.RATE_QUOTED, TradeState.NEGOTIATING):
         # Fix negotiated rate: update customer_rate to the agreed negotiated rate
         if trade.state == TradeState.NEGOTIATING:
@@ -530,13 +530,21 @@ def handle_message(phone_number: str, message: str) -> str:
                 trade.customer_rate = trade.lp_client_counter
             elif trade.lp_min_customer_rate is not None:
                 trade.customer_rate = trade.lp_min_customer_rate
-        trade.state   = TradeState.AWAITING_BENEFICIARY
-        trade.locked_at = datetime.utcnow()
+        trade.state             = TradeState.LOCKED_IN
+        trade.locked_at         = datetime.utcnow()
+        trade.trade_summary_sent = True
+        reply = _format_trade_summary(trade)
+        session["history"].append({"role": "assistant", "content": reply})
+        return reply
+
+    # Any message after trade summary - send beneficiary request and await details
+    if trade.state == TradeState.LOCKED_IN:
+        trade.state = TradeState.AWAITING_BENEFICIARY
         reply = _format_beneficiary_request(trade)
         session["history"].append({"role": "assistant", "content": reply})
         return reply
 
-    # Beneficiary details received - post to Slack, send simple confirmation to client
+    # Beneficiary details received - post final summary to Slack only, simple reply to client
     if trade.state == TradeState.AWAITING_BENEFICIARY:
         trade.beneficiary_details = message
         trade.state = TradeState.SUMMARY_POSTED
