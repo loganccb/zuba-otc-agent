@@ -41,7 +41,7 @@ KNOWN_CUSTOMERS: dict[str, Customer] = {
     ),
 }
 
-HARD_CURRENCIES = ["USDT", "USDC", "USD", "GBP", "EUR", "CAD", "ZAR"]
+HARD_CURRENCIES = ["USDT", "USDC", "USD", "GBP", "EUR", "CAD", "ZAR", "CNY"]
 
 ZUBA_ACCOUNT = {
     "account_name":   "Zuba Technologies Ltd",
@@ -59,9 +59,10 @@ def _get_or_create_session(phone_number: str) -> dict:
             Customer(phone_number=phone_number)
         )
         sessions[phone_number] = {
-            "trade":    None,
-            "customer": customer,
-            "history":  [],
+            "trade":             None,
+            "customer":          customer,
+            "history":           [],
+            "last_message_time": None,
         }
     return sessions[phone_number]
 
@@ -96,6 +97,9 @@ _CURRENCY_ALIASES: list[tuple[str, str]] = [
     ("TETHER",       "USDT"),
     ("RANDS",        "ZAR"),
     ("RAND",         "ZAR"),
+    ("YUAN",         "CNY"),
+    ("RENMINBI",     "CNY"),
+    ("RMB",          "CNY"),
     ("CEDIS",        "GHS"),
     ("CEDI",         "GHS"),
 ]
@@ -107,7 +111,7 @@ def _extract_pair_and_volume(message: str) -> dict:
 
     # 1. Explicit pair e.g. EUR/NGN
     pair_match = re.search(
-        r'\b(USDT|USDC|USD|GBP|EUR|CAD|ZAR)/(NGN|GHS|ZAR)\b', msg
+        r'\b(USDT|USDC|USD|GBP|EUR|CAD|ZAR|CNY)/(NGN|GHS|ZAR)\b', msg
     )
     if pair_match:
         result["pair"] = pair_match.group(0)
@@ -130,8 +134,10 @@ def _extract_pair_and_volume(message: str) -> dict:
         if not found and "$" in message:
             found = "USD"
 
-        if found:
-            result["pair"] = f"{found}/NGN"
+        if found and found != "GHS":
+            ghs_in_msg = bool(re.search(r'\b(GHS|CEDIS?|CEDI)\b', message, re.IGNORECASE))
+            local = "GHS" if ghs_in_msg else "NGN"
+            result["pair"] = f"{found}/{local}"
 
     # Volume: allow €/£/$ symbol optionally attached to number
     vol_match = re.search(
@@ -304,6 +310,8 @@ def _format_trade_summary(trade: Trade) -> str:
     hard, local = pair.split("/")
     hard_amount  = f"{trade.volume_usd:,.2f}"
     local_amount = f"{trade.customer_rate * trade.volume_usd:,.2f}" if trade.customer_rate and trade.volume_usd else "-"
+    lock_time    = trade.locked_at or datetime.utcnow()
+    expiry_str   = (lock_time + timedelta(seconds=600)).strftime("%H:%M UTC")
 
     return (
         f"Trade Summary\n"
@@ -314,7 +322,7 @@ def _format_trade_summary(trade: Trade) -> str:
         f"Name: {ZUBA_ACCOUNT['account_name']}\n"
         f"Account number: {ZUBA_ACCOUNT['account_number']}\n"
         f"Bank: {ZUBA_ACCOUNT['bank_name']}\n\n"
-        f"Rate is locked. Do not send funds until you have received this confirmation."
+        f"Rate locked for 10 minutes. Please send funds before {expiry_str}."
     )
 
 
@@ -420,6 +428,7 @@ Keep all replies short. No bullet points. No bold text."""
 def handle_message(phone_number: str, message: str) -> str:
     session  = _get_or_create_session(phone_number)
     customer = session["customer"]
+    session["last_message_time"] = datetime.utcnow()
 
     # If the previous trade is complete, start a fresh one for the new enquiry
     if session["trade"] and session["trade"].state == TradeState.SUMMARY_POSTED:
@@ -567,3 +576,35 @@ def reject_trade(trade_id: str) -> Optional[str]:
     if session and session["trade"] and session["trade"].trade_id == trade_id:
         session["trade"].state = TradeState.SUMMARY_POSTED  # close session
     return client_phone
+
+
+# --- Proactive rate expiry cancellation ---
+
+def cancel_expired_trades() -> list[tuple[str, str]]:
+    """
+    Check all sessions for trades where the quote has expired and the client
+    has not messaged since the quote was sent. Called by the scheduler every 30s.
+    Returns list of (phone_number, message) pairs to send via Twilio.
+    """
+    to_cancel = []
+    for phone_number, session in list(sessions.items()):
+        trade = session.get("trade")
+        if not trade:
+            continue
+        if trade.state not in (TradeState.RATE_QUOTED, TradeState.NEGOTIATING):
+            continue
+        if not trade.quote_time or not is_rate_expired(trade.quote_time):
+            continue
+        last_msg = session.get("last_message_time")
+        if last_msg and last_msg > trade.quote_time:
+            # Client messaged after the quote - reactive expiry check handles this
+            continue
+        # Proactive cancellation
+        session["trade"] = None
+        msg = (
+            "Your rate has expired and the trade has been cancelled. "
+            "Please do not send funds. Message us when you are ready to proceed and we will reconfirm rates."
+        )
+        session["history"].append({"role": "assistant", "content": msg})
+        to_cancel.append((phone_number, msg))
+    return to_cancel

@@ -1,15 +1,17 @@
 from fastapi import FastAPI, Form
 from fastapi.responses import PlainTextResponse
 from twilio.rest import Client as TwilioClient
+from apscheduler.schedulers.background import BackgroundScheduler
 
 from config import PORT, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_OTC_NUMBER, TWILIO_LP_NUMBER
-from agent import handle_message, handle_lp_response, approve_trade, reject_trade
+from agent import handle_message, handle_lp_response, approve_trade, reject_trade, cancel_expired_trades
 import lp_comms
 import slack
 
 app = FastAPI()
 
 twilio_client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+scheduler = BackgroundScheduler()
 
 
 # ---------------------------------------------------------------------------
@@ -29,6 +31,28 @@ def _empty_twiml() -> PlainTextResponse:
         content='<?xml version="1.0" encoding="UTF-8"?><Response/>',
         media_type="application/xml",
     )
+
+
+# ---------------------------------------------------------------------------
+# Scheduler: proactive rate expiry cancellation
+# ---------------------------------------------------------------------------
+
+@app.on_event("startup")
+async def start_scheduler():
+    def _check_and_cancel():
+        for phone_number, msg in cancel_expired_trades():
+            twilio_client.messages.create(
+                from_=f"whatsapp:{TWILIO_OTC_NUMBER}",
+                to=f"whatsapp:{phone_number}",
+                body=msg,
+            )
+    scheduler.add_job(_check_and_cancel, "interval", seconds=30)
+    scheduler.start()
+
+
+@app.on_event("shutdown")
+async def stop_scheduler():
+    scheduler.shutdown()
 
 
 # ---------------------------------------------------------------------------

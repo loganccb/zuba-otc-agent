@@ -16,11 +16,12 @@ def check_compliance(trade: Trade, customer: Customer) -> list[str]:
     flags = []
 
     # 1. Large trade
-    if trade.volume_usd and trade.volume_usd >= LARGE_TRADE_THRESHOLD_USD:
-        flags.append(
-            f"LARGE_TRADE: Volume ${trade.volume_usd:,.0f} exceeds "
-            f"${LARGE_TRADE_THRESHOLD_USD:,.0f} threshold"
-        )
+    # TODO: re-enable with confirmed threshold from Ali/Raza
+    # if trade.volume_usd and trade.volume_usd >= LARGE_TRADE_THRESHOLD_USD:
+    #     flags.append(
+    #         f"LARGE_TRADE: Volume ${trade.volume_usd:,.0f} exceeds "
+    #         f"${LARGE_TRADE_THRESHOLD_USD:,.0f} threshold"
+    #     )
 
     # 2. Weekend execution risk
     if datetime.utcnow().weekday() >= 5:  # Saturday=5, Sunday=6
