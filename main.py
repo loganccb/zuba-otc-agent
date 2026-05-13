@@ -56,8 +56,8 @@ def _voice_gather(say_text: str) -> PlainTextResponse:
     )
     gather.say(say_text)
     resp.append(gather)
-    # Fallback if no speech is detected after the gather
-    resp.say("I didn't catch that. Please call back and try again.")
+    # Fallback if no speech is detected - redirect to re-greet rather than hang up
+    resp.redirect("/voice")
     return PlainTextResponse(str(resp), media_type="application/xml")
 
 
@@ -179,7 +179,7 @@ async def voice_response(
     Confidence: str = Form(default="0"),
 ):
     """Receives the transcribed speech, runs it through the agent, speaks the reply."""
-    if not SpeechResult or float(Confidence) < 0.4:
+    if not SpeechResult:
         return _voice_gather("Sorry, I didn't catch that. Could you please repeat?")
 
     reply = handle_message(phone_number=From, message=SpeechResult)
