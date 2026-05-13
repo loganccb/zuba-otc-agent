@@ -77,6 +77,7 @@ def post_trade_summary(trade, customer) -> None:
         lines = [l for l in trade.beneficiary_details.splitlines() if not l.strip().upper().startswith("AMOUNT")]
         beneficiary_block = "\n".join(lines).strip()
 
+    source_rate = trade.lp_counter_rate if trade.lp_counter_rate else trade.lp_rate
     flags_line = f"\n:warning: Compliance flags: {', '.join(trade.compliance_flags)}" if trade.compliance_flags else ""
     _post(
         f":white_check_mark: *{trade.trade_id}*\n"
@@ -85,7 +86,7 @@ def post_trade_summary(trade, customer) -> None:
         f"Input Currency: {local}\n"
         f"Input Amount: {local_amount:,.2f}\n"
         f"Locked Rate: {trade.customer_rate:,.2f}\n"
-        f"Source Rate: {trade.lp_rate:,.4f}\n"
+        f"Source Rate: {source_rate:,.4f}\n"
         f"Name of customer: {customer.name}\n"
         f"{beneficiary_block}"
         f"{flags_line}"

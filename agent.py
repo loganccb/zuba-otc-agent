@@ -1,3 +1,4 @@
+import os
 import re
 from datetime import datetime, timedelta
 from typing import Optional
@@ -19,13 +20,21 @@ claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 sessions: dict[str, dict] = {}
 _pending_lp: dict[str, str] = {}           # trade_id -> client phone, async LP flow
 _pending_compliance: dict[str, str] = {}   # trade_id -> client phone, compliance hold
-_trade_counter = 103
+
+_COUNTER_FILE = os.path.join(os.path.dirname(__file__), "trade_counter.txt")
+_COUNTER_FALLBACK = 207  # first trade will be TRD-208
 
 
 def _next_trade_id() -> str:
-    global _trade_counter
-    _trade_counter += 1
-    return f"TRD-{_trade_counter}"
+    try:
+        with open(_COUNTER_FILE, "r") as f:
+            current = int(f.read().strip())
+    except (FileNotFoundError, ValueError):
+        current = _COUNTER_FALLBACK
+    next_id = current + 1
+    with open(_COUNTER_FILE, "w") as f:
+        f.write(str(next_id))
+    return f"TRD-{next_id}"
 
 
 # --- Known customers ---
